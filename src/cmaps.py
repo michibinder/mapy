@@ -27,14 +27,18 @@ def get_terrain_cmap():
     cmap = LinearSegmentedColormap.from_list('white_terrain', colors=colors, N=256)
     return cmap
     
-def get_wave_cmap():
-    """Create a custom colormap with smooth transitions between the given colors."""
+def get_wave_cmap(center_color='white'):
+    """Create a custom colormap with smooth transitions between the given colors.
+
+    `center_color` sets the near-zero (middle plateau) color: 'white' by default; pass e.g.
+    'lightgrey' for a Crameri-vik-like grayish centre that reads better as a 3D slice over a white
+    figure background (while the flat 2D curtain/colorbar keeps the exact white)."""
     c0 = 'darkslateblue'
     c1 = 'royalblue'
     c2 = 'cornflowerblue'
     #c2 = 'lightblue'
     c3 = 'lavender'
-    c4 = 'white' # 'whitesmoke'
+    c4 = center_color # 'white'/'whitesmoke'/'lightgrey'
     c5 = 'palegoldenrod'
     c55 = '#EEE600'
     c6 = 'goldenrod'
@@ -69,6 +73,25 @@ def get_spectral_white_cmap():
     cmap = LinearSegmentedColormap.from_list('spectral_white', colors, N=n)
     return cmap
     
+def get_vik_white_cmap(white_width=0.14, plateau=0.04, n=256):
+    """Crameri's 'vik' with a truly white center.
+
+    A pure-white plateau of half-width `plateau`/2 sits at the middle; outside it the
+    colors blend back into the original vik with a smoothstep over `white_width` from
+    the center (matching the white-plateau style of get_wave_cmap)."""
+    from cmcrameri import cm as crameri_cm
+
+    x = np.linspace(0, 1, n)
+    colors = crameri_cm.vik(x)
+
+    distance = np.abs(x - 0.5)
+    t = np.clip((distance - plateau / 2) / (white_width - plateau / 2), 0.0, 1.0)
+    white_weight = 1.0 - t * t * (3.0 - 2.0 * t)  # smoothstep: 1 at center -> 0 at white_width
+    colors[:, :3] = colors[:, :3] * (1.0 - white_weight[:, None]) + white_weight[:, None]
+
+    return LinearSegmentedColormap.from_list('vik_white', colors, N=n)
+
+
 def get_greenpurple_cmap():
     """Diverging colormap: blue → green → white → yellow/red, keeping positive side identical to get_wave_cmap()."""
     

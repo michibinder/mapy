@@ -39,6 +39,9 @@ ytick.minor.size:    2.5 # 2       # minor tick size in points
 ytick.major.width:   1 # 0.8     # major tick width in points
 ytick.minor.width:   0.7 # 0.6     # minor tick width in points
 
+xtick.minor.visible: True
+ytick.minor.visible: True
+
 pcolor.shading : auto
 
 # Lines

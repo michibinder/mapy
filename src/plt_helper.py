@@ -20,7 +20,7 @@ import pywt
 
 import yaml
 
-from plteulag.graveyard.waveletFunctions import wave_signif, wavelet
+# from plteulag.graveyard.waveletFunctions import wave_signif, wavelet
 # from statistics import linear_regression
 
 # import logging
@@ -222,6 +222,9 @@ def _rename_pmap_vars(ds):
         "uvelx": "u",
         "uvely": "v",
         "uvelz": "w",
+        "uvelx_ambient": "ue",
+        "uvely_ambient": "ve",
+        "uvelz_ambient": "we",
     }.items():
         if old in ds:
             rename_map[old] = new
@@ -255,21 +258,42 @@ def _augment_pmap_fields(ds, ds0, cfg):
     ds["ppe"] = ds0["p"].broadcast_like(ds["p"])
     ds["rh0"] = ds0["rho"].broadcast_like(ds["rho"])
 
-    if "u" in ds0:
+    # ambient wind: prefer the model output (uvelx/uvely_ambient, time-dependent for
+    # transient_wind runs); fall back to the first time step / the config value
+    if "ue" in ds:
+        pass
+    elif "u" in ds0:
         ds["ue"] = ds0["u"].broadcast_like(ds["u"])
     else:
         ds["ue"] = _broadcast_scalar_field(ds["th"], cfg["ambient_fields"]["velocity_x"])
 
-    if "v" in ds and "v" in ds0:
+    if "ve" in ds or "v" not in ds:
+        pass
+    elif "v" in ds0:
         ds["ve"] = ds0["v"].broadcast_like(ds["v"])
-    elif "v" in ds:
+    else:
         ds["ve"] = _broadcast_scalar_field(ds["v"], cfg["ambient_fields"]["velocity_y"])
 
     ds["t"] = ds["th"] * (ds["p"] / p0) ** cfg["constants"]["Rd_cpd"]
     return ds
 
 
-def _prepare_pmap_xz_dataset(ds, y_index):
+def _to_canonical_dims(ds, dimorder="txyz"):
+    """Reorder a loaded slice to the internal canonical order (time, z, y, x) the plotting
+    expects, so it is correct for either stored order (new "txyz" or legacy "tzyx"). Spatial
+    dims are reordered by name when present (robust to the file's stored order); if they are
+    not named x/y/z they are first named from the declared ``dimorder``."""
+    if not any(d in ds.dims for d in ("x", "y", "z")):
+        spatial = [c for c in dimorder if c in "xyz"]
+        body = [d for d in ds.dims if d != "time"]
+        if len(spatial) == len(body):
+            ds = ds.rename(dict(zip(body, spatial)))
+    order = [d for d in ("time", "z", "y", "x") if d in ds.dims]
+    return ds.transpose(*order) if order else ds
+
+
+def _prepare_pmap_xz_dataset(ds, y_index, dimorder="txyz"):
+    ds = _to_canonical_dims(ds, dimorder)
     ds = ds.squeeze(drop=True)
     ds = ds.assign_coords({"time": _maybe_hours(ds["time"]), "x": ds["x"] / 1000, "z": ds["z"] / 1000})
     ds["zcr"] = ds["zcr"] / 1000
@@ -285,7 +309,8 @@ def _prepare_pmap_xz_dataset(ds, y_index):
     return ds
 
 
-def _prepare_pmap_yz_dataset(ds, x_index):
+def _prepare_pmap_yz_dataset(ds, x_index, dimorder="txyz"):
+    ds = _to_canonical_dims(ds, dimorder)
     ds = ds.squeeze(drop=True)
     ds = ds.assign_coords({"time": _maybe_hours(ds["time"]), "y": ds["y"] / 1000, "z": ds["z"] / 1000})
     ds["zcr"] = ds["zcr"] / 1000
@@ -301,7 +326,9 @@ def _prepare_pmap_yz_dataset(ds, x_index):
     return ds
 
 
-def _prepare_pmap_xy_dataset(ds, topo_ds, k_index):
+def _prepare_pmap_xy_dataset(ds, topo_ds, k_index, dimorder="txyz"):
+    ds = _to_canonical_dims(ds, dimorder)
+    topo_ds = _to_canonical_dims(topo_ds, dimorder)
     ds = ds.squeeze(drop=True)
     ds = ds.assign_coords({"time": _maybe_hours(ds["time"]), "x": ds["x"] / 1000, "y": ds["y"] / 1000, "z": ds["z"] / 1000})
     ds["zcr"] = ds["zcr"] / 1000
@@ -319,53 +346,164 @@ def _prepare_pmap_xy_dataset(ds, topo_ds, k_index):
     return ds
 
 
-def _split_pmap_xy_slices(dsxy, topo_ds, slice_indices):
+def _split_pmap_xy_slices(dsxy, topo_ds, slice_indices, dimorder="txyz"):
     if "z" not in dsxy.dims:
         dsxy = dsxy.expand_dims({"z": [dsxy["z"].item()]})
 
     dsxy_list = []
     for pos, k_index in enumerate(slice_indices):
-        dsxy_list.append(_prepare_pmap_xy_dataset(dsxy.isel(z=pos), topo_ds, k_index))
+        dsxy_list.append(_prepare_pmap_xy_dataset(dsxy.isel(z=pos), topo_ds, k_index, dimorder))
     return dsxy_list
 
 
-def preprocess_pmap_xzyz(fpath, slices={"x": 0, "y": 0, "z": [0]}):
+def preprocess_pmap_xzyz(fpath, slices={"x": 0, "y": 0, "z": [0]}, dimorder="txyz"):
     slices = sanitize_slice_request(fpath, slices)
     cfg = _load_pmap_cfg(fpath)
 
     dsy = xr.open_dataset(os.path.join(fpath, "slices_y.nc"), decode_times=False, chunks={}).isel(y=slices["y"])
     dsy0 = xr.open_dataset(os.path.join(fpath, "slices_y.nc"), decode_times=False, chunks={}).isel(y=slices["y"], time=0)
-    dsxz = _prepare_pmap_xz_dataset(_augment_pmap_fields(dsy, dsy0, cfg), slices["y"])
+    dsxz = _prepare_pmap_xz_dataset(_augment_pmap_fields(dsy, dsy0, cfg), slices["y"], dimorder)
 
     dsx = xr.open_dataset(os.path.join(fpath, "slices_x.nc"), decode_times=False, chunks={}).isel(x=slices["x"])
     dsx0 = xr.open_dataset(os.path.join(fpath, "slices_x.nc"), decode_times=False, chunks={}).isel(x=slices["x"], time=0)
-    dsyz = _prepare_pmap_yz_dataset(_augment_pmap_fields(dsx, dsx0, cfg), slices["x"])
+    dsyz = _prepare_pmap_yz_dataset(_augment_pmap_fields(dsx, dsx0, cfg), slices["x"], dimorder)
 
     return cfg, dsxz, dsyz
 
 
-def preprocess_pmap_tstep(fpath, t, slices={"x": 0, "y": 0, "z": [0]}):
+def _match_reference_coords(ds_ref, ds_data):
+    """Relabel a reference dataset's dimension coordinates to the data's, by index, where the
+    sizes match. The reference run of a restart can label shared dims differently than the data
+    — notably the vertical: a restart writes the stretched level heights as ``z`` while the base
+    run wrote a uniform computational ``z`` — even though the model grid is identical (``zcr``
+    matches by index). Without this, the coordinate-aware subtraction in ``_augment_pmap_fields``
+    aligns on the mismatched labels and zeroes the perturbations (blank T')."""
+    shared = {
+        d: ds_data[d]
+        for d in ds_ref.dims
+        if d in ds_ref.coords and d in ds_data.coords and ds_ref.sizes[d] == ds_data.sizes[d]
+    }
+    return ds_ref.assign_coords(shared)
+
+
+_AMBIENT_CACHE = {}
+
+
+def _load_pmap_ambient(reference_fpath):
+    """Load the t=0 ambient as a 1D vertical profile (theta/exner/density vs height ``zcr``) from
+    a single column of the reference run's ``data_0.nc`` — the true initial state on the model
+    grid (and the natural source once the ambient becomes a 3D global field for nested runs). The
+    tiny profile is cached to ``<ref>/_ambient_profile.npz`` so the one HDF5 read happens once and
+    the animation's many worker processes only load the small npz — never opening ``data_0.nc``
+    concurrently, which serializes/hangs under HDF5 file locking on Lustre. Returns a dict of 1D
+    arrays (``zcr`` ascending) or ``None`` if no source, so callers fall back to the legacy
+    ``slices.isel(0)`` reference. A profile (not full planes) also keeps the reference decoupled
+    from the first stored slice/cube frame (which need not be at t=0). Cached in memory per
+    reference run (the ambient is time-invariant)."""
+    if reference_fpath not in _AMBIENT_CACHE:
+        npz = os.path.join(reference_fpath, "_ambient_profile.npz")
+        data0 = os.path.join(reference_fpath, "data_0.nc")
+        keys = ("zcr", "theta_total", "exner_total", "density")
+        profile = None
+        if os.path.isfile(npz) and (not os.path.isfile(data0) or os.path.getmtime(npz) >= os.path.getmtime(data0)):
+            with np.load(npz) as z:
+                profile = {k: z[k] for k in keys}
+        elif os.path.isfile(data0):
+            ds = xr.open_dataset(data0, decode_times=False)
+            if "time" in ds.dims:
+                ds = ds.isel(time=0)
+            col = ds[list(keys)].isel(x=0, y=0).load()
+            ds.close()
+            order = np.argsort(np.asarray(col["zcr"].values))
+            profile = {k: np.asarray(col[k].values)[order] for k in keys}
+            try:
+                np.savez(npz, **profile)
+            except OSError:
+                pass
+        _AMBIENT_CACHE[reference_fpath] = profile
+    return _AMBIENT_CACHE[reference_fpath]
+
+
+_AMBIENT_DS0_CACHE = {}
+
+
+def _ambient_for(profile, target):
+    """Evaluate the 1D ambient profile at a slice's physical heights (``target['zcr']``) to build
+    the reference ``ds0`` on the slice grid — works uniformly for xz/yz/xy without strided
+    full-plane reads, and exactly equals the (horizontally uniform) 1D ambient. A future 3D
+    ambient would replace this with a per-column vertical interpolation. Carries only the slice's
+    dimension coordinates, so the (numpy) result is reusable for every time step."""
+    zt = np.asarray(target["zcr"].values)
+    coords = {d: target[d] for d in target["zcr"].dims if d in target.coords}
+    ds0 = xr.Dataset()
+    for v in ("theta_total", "exner_total", "density"):
+        amb = np.interp(zt.ravel(), profile["zcr"], profile[v]).reshape(zt.shape)
+        ds0[v] = xr.DataArray(amb, dims=target["zcr"].dims, coords=coords)
+    return ds0
+
+
+def _ambient_ds0_key(reference_fpath, fname, sel):
+    (axis, idx), = sel.items()
+    return (reference_fpath, fname, axis, tuple(np.atleast_1d(idx).tolist()))
+
+
+def precompute_ambient(fpath, slices):
+    """Compute and cache the ambient reference ``ds0`` for the xz/yz/xy slices ONCE — call this in
+    the parent process before the render forks its workers. ``data_0.nc`` (via the profile npz) is
+    read a single time, the per-slice references are built into ``_AMBIENT_DS0_CACHE`` as numpy,
+    and every forked worker then merely subtracts the inherited reference (no per-worker file read
+    or dask compute, which otherwise oversubscribes a many-core node). Returns False (leaving the
+    legacy per-frame reference in place) when no ambient source is available."""
+    reference_fpath = _get_pmap_reference_path(fpath)
+    ambient = _load_pmap_ambient(reference_fpath)
+    if ambient is None:
+        return False
+    for fname, sel in (("slices_y.nc", {"y": slices["y"]}),
+                       ("slices_x.nc", {"x": slices["x"]}),
+                       ("slices_z.nc", {"z": slices["z"]})):
+        # use a context manager so no slice file handle is left open across the worker fork
+        with xr.open_dataset(os.path.join(fpath, fname), decode_times=False) as ds:
+            _reference_state(ambient, ds.isel(time=0, **sel), reference_fpath, fname, sel)
+    return True
+
+
+def _reference_state(ambient, target, reference_fpath, fname, sel):
+    """Build the t=0 reference ``ds0`` for ``_augment_pmap_fields`` from the ambient profile
+    (data_0.nc), caching it per slice so it is computed once (in the parent, before the render
+    parallelizes) and every worker only subtracts it; falls back to the legacy first frame of the
+    reference slices file when no ambient is available."""
+    if ambient is None:
+        legacy = xr.open_dataset(os.path.join(reference_fpath, fname), decode_times=False, chunks={}).isel(time=0, **sel)
+        return _match_reference_coords(legacy, target)
+    key = _ambient_ds0_key(reference_fpath, fname, sel)
+    if key not in _AMBIENT_DS0_CACHE:
+        _AMBIENT_DS0_CACHE[key] = _ambient_for(ambient, target).load()
+    return _AMBIENT_DS0_CACHE[key]
+
+
+def preprocess_pmap_tstep(fpath, t, slices={"x": 0, "y": 0, "z": [0]}, dimorder="txyz"):
     slices = sanitize_slice_request(fpath, slices)
     cfg = _load_pmap_cfg(fpath)
     reference_fpath = _get_pmap_reference_path(fpath)
+    ambient = _load_pmap_ambient(reference_fpath)
 
     dsy = xr.open_dataset(os.path.join(fpath, "slices_y.nc"), decode_times=False, chunks={}).isel(time=t, y=slices["y"])
-    dsy0 = xr.open_dataset(os.path.join(reference_fpath, "slices_y.nc"), decode_times=False, chunks={}).isel(time=0, y=slices["y"])
-    dsxz = _prepare_pmap_xz_dataset(_augment_pmap_fields(dsy, dsy0, cfg), slices["y"])
+    dsy0 = _reference_state(ambient, dsy, reference_fpath, "slices_y.nc", {"y": slices["y"]})
+    dsxz = _prepare_pmap_xz_dataset(_augment_pmap_fields(dsy, dsy0, cfg), slices["y"], dimorder)
 
     dsx = xr.open_dataset(os.path.join(fpath, "slices_x.nc"), decode_times=False, chunks={}).isel(time=t, x=slices["x"])
-    dsx0 = xr.open_dataset(os.path.join(reference_fpath, "slices_x.nc"), decode_times=False, chunks={}).isel(time=0, x=slices["x"])
-    dsyz = _prepare_pmap_yz_dataset(_augment_pmap_fields(dsx, dsx0, cfg), slices["x"])
+    dsx0 = _reference_state(ambient, dsx, reference_fpath, "slices_x.nc", {"x": slices["x"]})
+    dsyz = _prepare_pmap_yz_dataset(_augment_pmap_fields(dsx, dsx0, cfg), slices["x"], dimorder)
 
     # z slices can be made more efficient without the list since all in one file
     # need option to select certain indices
     dsz = xr.open_dataset(os.path.join(fpath, "slices_z.nc"), decode_times=False, chunks={}).isel(time=t, z=slices["z"])
-    dsz0 = xr.open_dataset(os.path.join(reference_fpath, "slices_z.nc"), decode_times=False, chunks={}).isel(time=0, z=slices["z"])
+    dsz0 = _reference_state(ambient, dsz, reference_fpath, "slices_z.nc", {"z": slices["z"]})
     topo_raw = xr.open_dataset(os.path.join(reference_fpath, "slices_z.nc"), decode_times=False, chunks={}).isel(time=0, z=0)
     dsxy = _augment_pmap_fields(dsz, dsz0, cfg)
     topo_aug = _augment_pmap_fields(topo_raw, topo_raw, cfg)
-    topo = _prepare_pmap_xy_dataset(topo_aug, topo_aug, 0)
-    ds_xyslices = _split_pmap_xy_slices(dsxy, topo, slices["z"])
+    topo = _prepare_pmap_xy_dataset(topo_aug, topo_aug, 0, dimorder)
+    ds_xyslices = _split_pmap_xy_slices(dsxy, topo, slices["z"], dimorder)
 
     return cfg, dsxz, dsyz, ds_xyslices
 
