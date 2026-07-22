@@ -1,4 +1,4 @@
-# mb-pytools-dlr
+# mapy
 
 Visualization and postprocessing software for NetCDF output of the numerical flow solvers
 PMAP and EULAG and corresponding measurement data (lidar, AMTM, ...).
