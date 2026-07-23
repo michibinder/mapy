@@ -68,15 +68,17 @@ import lidar_obs_model_compare as base
 
 plt.style.use("/work/bd0620/b309199/mapy/src/latex_default.mplstyle")
 
-# detection-mode keyword anywhere on the CLI (default "runmean") -- three DISTINCT approaches:
-#   runmean = temporal high-pass: per-level windowed swing of T minus the 10-min running mean
-#   bwf     = vertical high-pass: max-min of the Butterworth T' over the 10-min x 6-km box
-#             (alias "tprime")
-#   box     = RAW absolute T: max-min over the 10-min x 1-km box (no background at all; the
-#             ~2-3 K stratification across 1 km is accepted)
+# detection-mode keyword anywhere on the CLI (default "level") -- three DISTINCT approaches:
+#   level = ONE altitude level: per-level windowed peak-trough of raw T (no background, no box;
+#           the period is the same-level peak->trough time only) (alias "runmean")
+#   bwf   = vertical high-pass: max-min of the Butterworth T' over the 10-min x 1-km box
+#           (alias "tprime")
+#   box   = RAW absolute T: max-min over the 10-min x 1-km box (the ~2-3 K stratification
+#           across 1 km is accepted)
 # the positional args are parsed from the remainder: MODE/SIM, AMP, HALF_Z, NIGHT.
-_MODE_KEYWORDS = {"runmean": "runmean", "bwf": "bwf", "tprime": "bwf", "box": "box"}
-DETECT_MODE = next((_MODE_KEYWORDS[a] for a in sys.argv[1:] if a in _MODE_KEYWORDS), "runmean")
+_MODE_KEYWORDS = {"level": "level", "runmean": "level", "bwf": "bwf", "tprime": "bwf",
+                  "box": "box"}
+DETECT_MODE = next((_MODE_KEYWORDS[a] for a in sys.argv[1:] if a in _MODE_KEYWORDS), "level")
 ARGS = [a for a in sys.argv[1:] if a not in _MODE_KEYWORDS]
 
 MODEL_SIM = ARGS[0] if len(ARGS) > 0 else "darwin_240718_400m_coralT_ifs_wcoast"
@@ -97,7 +99,10 @@ STRIDE = 3
 MATCH_LIDAR_SAMPLING = True
 
 EVENT_WINDOW_MIN = 10.0         # sliding-window length [min]; must hold the full 5-8 min event
-AMP_THRESHOLD_K = float(ARGS[1]) if len(ARGS) > 1 else 30.0   # temperature difference within the search box [K]
+MODE_DEFAULT_AMP_K = {"level": 28.0, "box": 32.0, "bwf": 28.0}   # per-mode thresholds (user
+#   2026-07-17: box pairs cells across 800 m and needs a higher bar; 28 K for the per-level and
+#   BWF modes -- chosen to pull the three climatologies closer together)
+AMP_THRESHOLD_K = float(ARGS[1]) if len(ARGS) > 1 else MODE_DEFAULT_AMP_K[DETECT_MODE]
 NOISE_AMP_RAISE = 2.0           # obs: the effective per-event threshold is AMP_THRESHOLD_K +
                                 # this x mean(retrieval error at the peak, at the trough) -- a
                                 # seed below its raised threshold never becomes a candidate
@@ -105,13 +110,17 @@ DT_PT_RANGE_MIN = (1.0, 6.0)    # accepted peak->trough time [min]: 2-12 min app
 SEARCH_HALF_Z_KM = float(ARGS[2]) if len(ARGS) > 2 else 3.0
 #   half-height of the 2D max/min search box (default +-3 km = 6 km full width): the trough may
 #   sit on another level than the warm peak. Non-default values tag the outputs.
-AMP_BOX_HALF_Z_KM = 0.5         # ("box" mode) half-height of the AMPLITUDE box (1 km full width)
-OUT_SUFFIX = ("" if AMP_THRESHOLD_K == 30.0 else f"_amp{AMP_THRESHOLD_K:.0f}") + \
+AMP_BOX_HALF_Z_KM = 0.4         # (box modes) half-height of the amplitude box (800 m full width)
+OUT_SUFFIX = ("" if AMP_THRESHOLD_K == MODE_DEFAULT_AMP_K[DETECT_MODE]
+              else f"_amp{AMP_THRESHOLD_K:.0f}") + \
     ("" if SEARCH_HALF_Z_KM == 3.0 else f"_zbox{SEARCH_HALF_Z_KM:g}") + \
-    {"runmean": "", "bwf": "_bwf", "box": "_box1"}[DETECT_MODE]
+    {"level": "_level", "bwf": "_bwf15", "box": "_box"}[DETECT_MODE]
 DEDUP_DT_MIN = 1.0              # events whose warm-peak times are within this [min] are the SAME
                                 # event seen by two seeds -> merged (strongest amplitude kept,
                                 # period = fastest valid swing among the duplicates)
+MIN_VALID_FRAC = 0.8            # obs: minimum fraction of RAW-measured samples in the event
+                                # window at the peak level; with the raw-valid peak/trough-cell
+                                # requirement this replaces the old blunt gap rule
 MERGE_DUPLICATES = True         # sweep mode disables this to get raw per-seed events
 SWEEP_THRESHOLDS_K = np.arange(45.0, 9.5, -1.0)   # elbow sweep: 45 K down to 10 K in 1-K steps
 SWEEP_FIT_HIGH_K = 28.0         # piecewise exponential fits: steep tail >= this ...
@@ -119,7 +128,7 @@ SWEEP_FIT_LOW_K = 25.0          # ... and the flatter mixed regime <= this
 SWEEP_FIT_EXT_K = 8.0           # extend each fit line this far into the other regime (the fits
                                 # coincide with the data inside their own range; the extension
                                 # makes the slope break visible)
-MAX_VERT_FWHM_KM = 5.0          # confinement: tube-core anomaly FWHM must stay below this [km]
+MAX_VERT_FWHM_KM = 4.0          # confinement: tube-core anomaly FWHM must stay below this [km]
 SUPPRESS_Z_KM = 4.0             # non-max suppression half-height around an accepted seed
 SEARCH_ZBAND_M = (52000.0, 68000.0)   # detection band; loaded with margin so the 900-m smoothing is clean
 
@@ -141,13 +150,21 @@ OBS_ZBAND_M = (31000.0, 75000.0)        # detection band = the FULL valid column
                                         # retrieval (30-75 km >=90% valid; nothing outside 30-77 km)
 OBS_FILTER_BAND_M = (30000.0, 76000.0)  # Butterworth background band (all valid data; filtfilt
                                         # odd-padding keeps the 1-km edge margins acceptable)
-OBS_BACKGROUND_CUTOFF_M = 20000.0       # vertical low-pass cutoff for the T' anomaly (obs convention
-                                        # of the compare / dyn_overview curtains)
+OBS_MAX_ERR_K = 8.0                     # cap the searched column where the night-median
+                                        # `temperature_err` exceeds this: box noise extremes are
+                                        # ~4 sigma, so sigma = 8 K produces ~32-K fake swings =
+                                        # our thresholds -- above that altitude the noise wins
+OBS_BACKGROUND_CUTOFF_M = 15000.0       # vertical low-pass cutoff for the T' anomaly (15 km --
+                                        # user choice 2026-07-17, physically motivated; the
+                                        # compare/dyn_overview curtains keep their own 20 km)
 # fixed top-row x-ranges, IDENTICAL across all figure variants (cubes / single night / archive)
 # so the histograms compare directly.
-STATS_AMP_XLIM_K = (30.0, 65.0)         # panel a (user choice)
-STATS_FWHM_XLIM_KM = (0.0, 12.0)        # panel c
-STATS_Z_XLIM_KM = (30.0, 75.0)          # panel d (= the obs column; cube events sit at 52-68)
+STATS_AMP_XLIM_K = (26.0, 80.0)         # panels a AND e share this amplitude x-range (user)
+STATS_YMAX_ARCHIVE = 400.0              # fixed top-row y ceiling for the ARCHIVE figures so the
+                                        # three mode variants compare directly (max panel = 393)
+STATS_FWHM_XLIM_KM = (0.0, 6.0)         # panel c
+STATS_Z_XLIM_KM = (30.0, 75.0)          # altitude-marginal bin range (panel f)
+MARGINAL_WIDTH_FRAC = 0.3               # panel-f altitude marginal occupies this fraction of width          # panel d (= the obs column; cube events sit at 52-68)
 
 OBS_ZLIM_KM = (35.0, 75.0)              # fixed display altitude range of the obs panels f/g
 
@@ -260,7 +277,7 @@ def vertical_fwhm(profile, z, iz_core, sign):
     return abs(z_hi - z_lo), float(z[k]), float(sign * p[k]), trunc_hi or trunc_lo
 
 
-def detect_events(field, anom, times, z, err=None):
+def detect_events(field, anom, times, z, err=None, valid=None):
     """Vortex-overpass candidate events in one curtain. Returns a list of dicts.
 
     `field` is the DETECTION field: absolute temperature in the background-free modes
@@ -272,6 +289,10 @@ def detect_events(field, anom, times, z, err=None):
     uncertainty: every event must exceed AMP_THRESHOLD_K + NOISE_AMP_RAISE * mean(err at the
     peak cell, err at the trough cell) -- a sub-noise seed never becomes a candidate (no grey
     box), replacing the old post-hoc significance gate and the night-median column cap.
+    `valid` (obs) is the RAW-measured mask: an event is only accepted if BOTH its peak and trough
+    cells are actual measurements AND at least MIN_VALID_FRAC of the window samples at the peak
+    level are raw-valid -- fill/interpolation artifacts (bottom-of-retrieval clamping, hole
+    edges) can then never define an event, wherever they occur.
     """
     fld = np.asarray(field, dtype=float)
     an = np.asarray(anom, dtype=float)
@@ -279,19 +300,16 @@ def detect_events(field, anom, times, z, err=None):
     dz = float(np.median(np.diff(z)))
     nwin = max(3, int(round(EVENT_WINDOW_MIN * 60.0 / dt)))
     nsupz = max(1, int(round(SUPPRESS_Z_KM * 1000.0 / dz)))
-    nsearchz = max(1, int(round(SEARCH_HALF_Z_KM * 1000.0 / dz)))
     nboxz = max(1, int(round(AMP_BOX_HALF_Z_KM * 1000.0 / dz)))
-    if DETECT_MODE == "runmean":
-        # background-free temporal high-pass: every temperature is compared only to values AT ITS
-        # OWN ALTITUDE within the running window (subtract the per-level window running mean).
-        fld = fld - uniform_filter1d(fld, nwin, axis=0, mode="nearest")
+    if DETECT_MODE == "level":
+        # ONE altitude level: windowed peak-trough of the raw field per level (background-free
+        # by construction -- a time difference at fixed altitude).
         work = maximum_filter1d(fld, nwin, axis=0) - minimum_filter1d(fld, nwin, axis=0)
     else:
-        # box modes: amplitude = max-min over the (window x box) region of the field as is --
-        # RAW absolute T over the small 1-km box ("box": the ~2-3 K/km stratification across
-        # 1 km is accepted), or the Butterworth T' over the +-SEARCH_HALF_Z_KM box ("bwf").
-        nampz = nboxz if DETECT_MODE == "box" else nsearchz
-        size = (nwin, 2 * nampz + 1)
+        # box modes: amplitude = max-min over the (window x 1-km box) region of the field as is
+        # -- RAW absolute T ("box": the ~2-3 K/km stratification across 1 km is accepted) or the
+        # Butterworth T' ("bwf").
+        size = (nwin, 2 * nboxz + 1)
         work = maximum_filter(fld, size=size) - minimum_filter(fld, size=size)
 
     events = []
@@ -306,23 +324,19 @@ def detect_events(field, anom, times, z, err=None):
         seg = fld[it0:it1, iz_c]
         i_max, i_min = int(np.argmax(seg)), int(np.argmin(seg))
         dt_level_min = abs(i_max - i_min) * dt / 60.0
-        if DETECT_MODE == "runmean":
-            # amplitude = same-level swing; the +-SEARCH box provides only the timing alternative
-            iz0 = max(0, iz_c - nsearchz)
-            box = fld[it0:it1, iz0:iz_c + nsearchz + 1]
-            bmax = np.unravel_index(np.argmax(box), box.shape)
-            bmin = np.unravel_index(np.argmin(box), box.shape)
-            dt_box_min = abs(int(bmax[0]) - int(bmin[0])) * dt / 60.0
+        if DETECT_MODE == "level":
+            # strictly single-level: no cross-level timing alternative (raw-T box extrema would
+            # be stratification-biased anyway)
+            dt_box_min = np.nan
             amp = float(seg[i_max] - seg[i_min])
             it_core = it0 + i_max                  # core = the warm peak at the seed level
             iz_start = iz_c
             pk_cell = (it0 + i_max, iz_c)
             tr_cell = (it0 + i_min, iz_c)
         else:
-            # box modes: amplitude, timing and core all from the mode's own amplitude box
-            nampz = nboxz if DETECT_MODE == "box" else nsearchz
-            ab0 = max(0, iz_c - nampz)
-            abox = fld[it0:it1, ab0:iz_c + nampz + 1]
+            # box modes: amplitude, timing and core all from the mode's own 1-km amplitude box
+            ab0 = max(0, iz_c - nboxz)
+            abox = fld[it0:it1, ab0:iz_c + nboxz + 1]
             am = np.unravel_index(np.argmax(abox), abox.shape)
             an_ = np.unravel_index(np.argmin(abox), abox.shape)
             amp = float(abox[am] - abox[an_])
@@ -331,6 +345,11 @@ def detect_events(field, anom, times, z, err=None):
             iz_start = ab0 + int(am[1])
             pk_cell = (it0 + int(am[0]), ab0 + int(am[1]))
             tr_cell = (it0 + int(an_[0]), ab0 + int(an_[1]))
+        if valid is not None:
+            if not (valid[pk_cell] and valid[tr_cell]):
+                continue
+            if valid[it0:it1, pk_cell[1]].mean() < MIN_VALID_FRAC:
+                continue
         noise = float(0.5 * (err[pk_cell] + err[tr_cell])) if err is not None else 0.0
         thr_eff = AMP_THRESHOLD_K + NOISE_AMP_RAISE * noise
         if amp < thr_eff:
@@ -340,7 +359,7 @@ def detect_events(field, anom, times, z, err=None):
         # vertical +/- dipole, dt ~ 0) is no overpass evidence and must not override a valid
         # same-level swing -- only times above the lower bound compete.
         dt_valid = [d for d in (dt_level_min, dt_box_min) if d >= DT_PT_RANGE_MIN[0]]
-        dt_pt_min = min(dt_valid) if dt_valid else min(dt_level_min, dt_box_min)
+        dt_pt_min = min(dt_valid) if dt_valid else float(np.nanmin([dt_level_min, dt_box_min]))
 
         fwhm_m, z_core, core_val, truncated = vertical_fwhm(an[it_core, :], z, iz_start, sign=1.0)
         fast = bool(dt_valid) and dt_pt_min <= DT_PT_RANGE_MIN[1]
@@ -407,7 +426,7 @@ def pick_example_column(col_xy, events_per_col, cube_index):
     return max(range(len(scores)), key=lambda c: scores[c])
 
 
-def _stats_panels(fig, axes, events):
+def _stats_panels(fig, axes, events, ymax=None):
     """Panels a-d: histograms of amplitude / peak->trough time / vertical FWHM / core altitude
     (all candidates grey, vortex BLACK like the curtain boxes). Ticks/labels on top, letters at
     the 8-pt inset."""
@@ -415,40 +434,50 @@ def _stats_panels(fig, axes, events):
     amp = np.array([e["amp_k"] for e in events])
     dtp = np.array([e["dt_peak_trough_min"] for e in events])
     fwhm = np.array([e["fwhm_km"] for e in events])
-    z_core = np.array([e["z_core_m"] for e in events]) / 1000.0
     vortex = np.array([e["vortex"] for e in events])
 
-    bins_a = np.arange(STATS_AMP_XLIM_K[0], STATS_AMP_XLIM_K[1] + 1.01, 2)
+    bins_a = np.arange(AMP_THRESHOLD_K, STATS_AMP_XLIM_K[1] + 0.01, 2)
     ax_a.hist(amp, bins=bins_a, color="0.7", label="all candidates")
     ax_a.hist(amp[vortex], bins=bins_a, color="black", label="vortex")
     ax_a.set_xlim(*STATS_AMP_XLIM_K)
-    ax_a.set_xlabel(r"$\Delta T_{pp}$ / K")
+    ax_a.set_xlabel(r"$\Delta T_{pt}$ / K")
     ax_a.set_ylabel("events / -")
     ax_a.legend(fontsize=6.5, loc="upper left", framealpha=0.9)
 
-    bins_b = np.arange(0, EVENT_WINDOW_MIN + 0.75, 0.5)
-    ax_b.hist(dtp, bins=bins_b, color="0.7")
-    ax_b.hist(dtp[vortex], bins=bins_b, color="black")
-    for x in DT_PT_RANGE_MIN:
-        ax_b.axvline(x, ls="--", color="C3", lw=1.3)
-    ax_b.set_xlim(0, EVENT_WINDOW_MIN + 0.5)
-    ax_b.set_xlabel(r"$\Delta t_{pp}$ / min")
+    doys = np.array([e.get("doy", np.nan) for e in events], dtype=float) % 366.0
+    has_doy = np.isfinite(doys)
+    bins_b = np.sort(np.concatenate([MONTH_START_DOY.astype(float),
+                                     MONTH_START_DOY + MONTH_LEN_D / 2.0, [366.0]]))
+    if has_doy.any():
+        ax_b.hist(doys[has_doy], bins=bins_b, color="0.7")
+        ax_b.hist(doys[has_doy & vortex], bins=bins_b, color="black")
+    ax_b.set_xlim(1, 366)
+    ax_b.set_xticks(MONTH_START_DOY + MONTH_LEN_D / 2.0)
+    ax_b.set_xticklabels("JFMAMJJASOND")
+    ax_b.set_xlabel("month")
 
     finite = np.isfinite(fwhm)
-    bins_c = np.arange(0, STATS_FWHM_XLIM_KM[1] + 0.01, 0.5)
+    bins_c = np.arange(0, STATS_FWHM_XLIM_KM[1] + 0.01, 0.25)
     ax_c.hist(fwhm[finite & (fwhm <= STATS_FWHM_XLIM_KM[1])], bins=bins_c, color="0.7")
     ax_c.hist(fwhm[vortex], bins=bins_c, color="black")
     ax_c.axvline(MAX_VERT_FWHM_KM, ls="--", color="C3", lw=1.3)
     ax_c.set_xlim(*STATS_FWHM_XLIM_KM)
     ax_c.set_xlabel("vertical FWHM / km")
 
-    bins_d = np.arange(STATS_Z_XLIM_KM[0], STATS_Z_XLIM_KM[1] + 0.01, 1.0)
-    ax_d.hist(z_core, bins=bins_d, color="0.7")
-    ax_d.hist(z_core[vortex], bins=bins_d, color="black")
-    ax_d.set_xlim(*STATS_Z_XLIM_KM)
-    ax_d.set_xlabel(r"core altitude $z$ / km")
+    bins_d = np.arange(0, EVENT_WINDOW_MIN + 0.75, 0.5)
+    ax_d.hist(dtp, bins=bins_d, color="0.7")
+    ax_d.hist(dtp[vortex], bins=bins_d, color="black")
+    for x in DT_PT_RANGE_MIN:
+        ax_d.axvline(x, ls="--", color="C3", lw=1.3)
+    ax_d.set_xlim(0, EVENT_WINDOW_MIN + 0.5)
+    ax_d.set_xlabel(r"$\Delta t_{pt}$ $(0.5\,T)$ / min")
 
+    if ymax is None:
+        ymax = max(ax.get_ylim()[1] for ax in axes)
     for label, ax in zip("abcd", axes):
+        ax.set_ylim(0, ymax)
+        if ax is not axes[0]:
+            plt.setp(ax.get_yticklabels(), visible=False)
         ax.grid(True, alpha=0.25)
         ax.xaxis.tick_top()
         ax.xaxis.set_label_position("top")
@@ -459,35 +488,61 @@ MONTH_LEN_D = np.array((31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31))
 MONTH_START_DOY = np.concatenate(([1], 1 + np.cumsum(MONTH_LEN_D[:-1])))
 
 
-def _month_panels(fig, ax_e, ax_f, events):
-    """Panels e/f: month-of-year histogram + core altitude vs CONTINUOUS day-of-year (grey
-    candidates, black vortex; the year is discarded, month+day keep their real position -- no
-    per-month binning gaps). Events without a "month" key (model cubes) leave the panels empty --
-    the axes stay, so all figure variants share one layout that 'fills up' from cube -> one
-    night -> all nights."""
+def _bottom_panels(fig, ax_e, ax_f, events):
+    """Panels e/f: (e) amplitude vs core altitude (dots: grey open candidates, black vortex) and
+    (f) core altitude vs CONTINUOUS day-of-year with the ALTITUDE MARGINAL overlaid as light step
+    lines on a hidden second x-axis anchored to the right edge (replaces the old top-row altitude
+    histogram -- same information as f's y-distribution). Events without a "month" key (model
+    cubes) leave f's scatter empty but keep the marginal."""
+    amp = np.array([e["amp_k"] for e in events])
+    z_core = np.array([e["z_core_m"] for e in events]) / 1000.0
+    vortex = np.array([e["vortex"] for e in events], dtype=bool)
+
+    ax_e.scatter(amp[~vortex], z_core[~vortex], s=7, facecolors="none", edgecolors="0.6",
+                 lw=0.5, zorder=2)
+    ax_e.scatter(amp[vortex], z_core[vortex], s=8, color="black", zorder=3)
+    if vortex.sum() >= 10:
+        # descriptive linear fit of the vortex amplitudes vs altitude (NB the lower envelope is
+        # shaped by the altitude-dependent noise-raised threshold, so the slope mixes physical
+        # amplitude growth with detection censoring)
+        b1, b0 = np.polyfit(z_core[vortex], amp[vortex], 1)
+        zz = np.array([z_core[vortex].min(), z_core[vortex].max()])
+        ax_e.plot(b0 + b1 * zz, zz, ls="--", color="C3", lw=1.3, zorder=4)
+        y_lbl = max(38.0, float(zz[0]))
+        ax_e.annotate(rf"{b1:.2f} K$\,$km$^{{-1}}$", (b0 + b1 * y_lbl, y_lbl),
+                      xytext=(6, 0), textcoords="offset points", va="center",
+                      fontsize=7, color="C3", zorder=6)
+    ax_e.set_xlim(*STATS_AMP_XLIM_K)
+    ax_e.set_xlabel(r"$\Delta T_{pt}$ / K")
+    ax_e.set_ylabel(r"core altitude $z$ / km")
+
     monthly = [e for e in events if "month" in e]
     if monthly:
-        month = np.array([e["month"] for e in monthly], dtype=float)
         doy = np.array([e["doy"] for e in monthly]) % 366.0
-        z_core = np.array([e["z_core_m"] for e in monthly]) / 1000.0
-        vortex = np.array([e["vortex"] for e in monthly])
-        bins_e = np.arange(0.5, 13.0, 1.0)
-        ax_e.hist(month, bins=bins_e, color="0.7")
-        ax_e.hist(month[vortex], bins=bins_e, color="black")
-        ax_f.scatter(doy[~vortex], z_core[~vortex], s=7, facecolors="none",
-                     edgecolors="0.6", lw=0.5, zorder=2)
-        ax_f.scatter(doy[vortex], z_core[vortex], s=8, color="black", zorder=3)
-    for ax in (ax_e, ax_f):
-        ax.grid(True, alpha=0.25)
-        ax.set_xlabel("month")
-    ax_e.set_xlim(0.5, 12.5)
-    ax_e.set_xticks(range(1, 13))
-    ax_e.set_xticklabels("JFMAMJJASOND")
-    ax_e.set_ylabel("events / -")
+        z_m = np.array([e["z_core_m"] for e in monthly]) / 1000.0
+        v_m = np.array([e["vortex"] for e in monthly], dtype=bool)
+        ax_f.scatter(doy[~v_m], z_m[~v_m], s=7, facecolors="none", edgecolors="0.6",
+                     lw=0.5, zorder=2)
+        ax_f.scatter(doy[v_m], z_m[v_m], s=8, color="black", zorder=3)
+    # altitude marginal on a hidden second x-axis, anchored to the RIGHT edge of panel f
+    if len(events):
+        ax_f2 = ax_f.twiny()
+        bins_z = np.arange(STATS_Z_XLIM_KM[0], STATS_Z_XLIM_KM[1] + 0.01, 1.0)
+        ax_f2.hist(z_core[vortex], bins=bins_z, orientation="horizontal",
+                   histtype="bar", color="black", zorder=1.6)
+        counts, _, _ = ax_f2.hist(z_core, bins=bins_z, orientation="horizontal",
+                                  histtype="step", color="0.65", lw=1.0, ls="--", zorder=1.7)
+        ax_f2.set_xlim(max(float(np.max(counts)), 1.0) / MARGINAL_WIDTH_FRAC, 0)
+        ax_f2.set_xticks([])
+        for sp in ax_f2.spines.values():
+            sp.set_visible(False)
     ax_f.set_xlim(1, 366)
     ax_f.set_xticks(MONTH_START_DOY + MONTH_LEN_D / 2.0)
     ax_f.set_xticklabels("JFMAMJJASOND")
+    ax_f.set_xlabel("month")
     ax_f.set_ylabel(r"core altitude $z$ / km")
+    for ax in (ax_e, ax_f):
+        ax.grid(True, alpha=0.25)
     _add_panel_label(ax_e, "e")
     _add_panel_label(ax_f, "f")
 
@@ -521,7 +576,7 @@ def _curtain_panel(fig, ax, temp2d, times, z, events, curtain_label, letter,
     return cbar_t
 
 
-def draw_event_figure(events, curtain, rate_txt, out):
+def draw_event_figure(events, curtain, rate_txt, out, stats_ymax=None):
     """THE standard event figure, shared by all variants (cube / single night / all nights):
     (a-d) amplitude / peak->trough / FWHM / core-altitude histograms over all events, (e) month
     histogram + (f) core altitude vs month (empty for the model, sparse for one night, filled for
@@ -534,16 +589,22 @@ def draw_event_figure(events, curtain, rate_txt, out):
     ax_f = fig.add_subplot(gs[1, 1])
     ax_curtain = fig.add_subplot(gs[1, 2:])
 
-    _stats_panels(fig, axes, events)
-    _month_panels(fig, ax_e, ax_f, events)
+    _stats_panels(fig, axes, events, ymax=stats_ymax)
+    _bottom_panels(fig, ax_e, ax_f, events)
     _curtain_panel(fig, ax_curtain, curtain["temp2d"], curtain["times"], curtain["z"],
                    curtain["events"], curtain["label"], "g",
                    curtain["time_scale"], curtain["time_xlabel"], curtain["time_formatter"])
     zlim = curtain.get("zlim_km") or (curtain["z"].min() / 1000.0, curtain["z"].max() / 1000.0)
     ax_curtain.set_ylim(*zlim)
+    ax_e.set_ylim(*zlim)
     ax_f.set_ylim(*zlim)
-    ax_e.text(XLBL, YPP, rate_txt, transform=ax_e.transAxes,
-              fontsize=7, bbox=base.LABEL_BOX_ROUND, zorder=7)
+    for ax in (ax_f, ax_curtain):
+        ax.set_ylabel("")
+        plt.setp(ax.get_yticklabels(), visible=False)
+    fig.get_layout_engine().set(w_pad=0.01, wspace=0.02)
+    ax_e.annotate(rate_txt, xy=(0, 1), xycoords="axes fraction",
+                  xytext=(6, -PANEL_LABEL_PAD_Y_PT), textcoords="offset points",
+                  ha="left", va="top", fontsize=7, bbox=base.LABEL_BOX_ROUND, zorder=7)
     fig.savefig(out, dpi=DPI, facecolor="w", bbox_inches="tight")
     plt.close(fig)
 
@@ -593,6 +654,9 @@ def load_obs_curtain(path=None):
     eb = err[:, band]
     tb_raw = tb.copy()      # pristine (NaN where the raw data has none) -- the curtain shows THIS,
     gap = ~np.isfinite(tb).any(axis=1)   # so laser-off gaps appear as white gaps, not interpolation
+    med_err = np.nanmedian(eb, axis=0)
+    ok = med_err < OBS_MAX_ERR_K
+    z_cap = float(zb[ok].max()) if ok.any() else float(zb.max())
     for arr in (tb, eb):
         for i in np.where(~gap)[0]:
             good = np.isfinite(arr[i])
@@ -606,7 +670,7 @@ def load_obs_curtain(path=None):
     bf, af = signal.butter(5, 2.0 * dzb / OBS_BACKGROUND_CUTOFF_M)
     tprime = tb - signal.filtfilt(bf, af, tb, axis=1)
 
-    keep = (zb >= OBS_ZBAND_M[0]) & (zb <= OBS_ZBAND_M[1])
+    keep = (zb >= OBS_ZBAND_M[0]) & (zb <= min(OBS_ZBAND_M[1], z_cap))
     start = datetime.datetime.utcfromtimestamp(unix[0])
     day0 = unix[0] - (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds()
     return (tb_raw[:, keep], tb[:, keep], tprime[:, keep], eb[:, keep],
@@ -630,12 +694,7 @@ def analyze_night(path=None, keep_curtain=False):
     if hours < MIN_NIGHT_HOURS:
         raise ValueError(f"record too short ({hours:.2f} h)")
     field = tprime if DETECT_MODE == "bwf" else temp_filled
-    events = detect_events(field, tprime, times, z, err=err)
-    half_win = EVENT_WINDOW_MIN * 60.0 / 2.0
-    gap_times = times[gap]
-    if gap_times.size:
-        events = [e for e in events
-                  if np.abs(gap_times - e["t_core_s"]).min() > half_win]
+    events = detect_events(field, tprime, times, z, err=err, valid=np.isfinite(temp_raw))
     start_doy = start.timetuple().tm_yday
     for e in events:
         e["month"] = start.month
@@ -675,7 +734,7 @@ def main_obs():
                "label": f"CORAL | {start:%Y-%m-%d}",
                "time_scale": 3600.0, "time_xlabel": "time / UTC",
                "time_formatter": mticker.FuncFormatter(_fmt_hhmm), "zlim_km": OBS_ZLIM_KM}
-    draw_event_figure(events, curtain, f"{n_vort}/{len(events)} vortex, {n_vort / hours:.2f} / h",
+    draw_event_figure(events, curtain, f"{n_vort}/{len(events)} vortex",
                       OUTPUT_DIR / f"{tag}.png")
     write_csv([events], np.array([[np.nan, np.nan]]), OUTPUT_DIR / f"{tag}.csv")
     print(f"  wrote {tag}.png / .csv  [{time.time() - t0:.1f} s total]")
@@ -719,9 +778,9 @@ def main_obs_all():
                "time_formatter": mticker.FuncFormatter(_fmt_hhmm), "zlim_km": OBS_ZLIM_KM}
 
     tag = f"coral_allnights_lidar_events{OUT_SUFFIX}"
-    rate_txt = (f"{n_vort}/{len(events)} vortex, {n_vort / hours_total:.3f} / h, "
-                f"{len(nights)} nights")
-    draw_event_figure(events, curtain, rate_txt, OUTPUT_DIR / f"{tag}.png")
+    rate_txt = f"{len(nights)} nights, {n_vort}/{len(events)} vortex"
+    draw_event_figure(events, curtain, rate_txt, OUTPUT_DIR / f"{tag}.png",
+                      stats_ymax=STATS_YMAX_ARCHIVE)
 
     fields = ["night", "month", "t_core_s", "z_core_m", "amp_k", "dt_peak_trough_min",
               "dt_level_min", "dt_box_min", "period_est_min", "fwhm_km", "core_tprime_k",
@@ -735,97 +794,121 @@ def main_obs_all():
 
 
 def main_obs_sweep():
-    """Amplitude-threshold sweep ("elbow" figure) over the whole CORAL archive.
+    """Amplitude-threshold sweep ("elbow" figure) over the whole CORAL archive, ALL THREE modes.
 
-    Detection runs ONCE per night at the sweep minimum WITHOUT duplicate-merging: the greedy seed
-    extraction is threshold-independent (the threshold only decides where it stops), so the event
-    set at any higher threshold is the exact amplitude-filtered subset. Per threshold, the
-    filtered per-night lists are duplicate-merged and noise-gated exactly like a native run.
-    Writes a one-panel figure (candidates grey, vortex black vs threshold) + the sweep csv.
+    Per mode, detection runs ONCE per night at the sweep minimum without duplicate-merging (the
+    greedy seed sequence is threshold-independent -- the threshold only decides where it stops).
+    Per threshold the per-night lists are amplitude-filtered INCLUDING the per-event noise raise,
+    duplicate-merged and re-flagged exactly like a native run. Figure: (a) linear counts vs
+    threshold, (b) log counts + piecewise exponential fits per mode, (c) 2-K amplitude
+    distributions as unfilled step lines (linear y). Wide csv with per-mode columns.
     """
-    global AMP_THRESHOLD_K, MERGE_DUPLICATES
+    global AMP_THRESHOLD_K, MERGE_DUPLICATES, DETECT_MODE
     AMP_THRESHOLD_K = float(SWEEP_THRESHOLDS_K.min())
     MERGE_DUPLICATES = False
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     files = sorted(OBS_DIR.glob("*T2Z900.nc"))
+    modes = ("level", "box", "bwf")
+    labels = {"level": "level", "box": "box", "bwf": "bwf15"}
+    colors = {"level": "black", "box": "C0", "bwf": "C3"}
     print(f"sweep {SWEEP_THRESHOLDS_K.max():.0f} -> {SWEEP_THRESHOLDS_K.min():.0f} K over "
-          f"{len(files)} CORAL nights (single detection pass at the minimum)")
-    with Pool(min(16, cpu_count())) as pool:
-        results = pool.map(_night_worker, files, chunksize=8)
-    nights = [r for r in results if "error" not in r]
-    n_raw = sum(len(n["events"]) for n in nights)
-    print(f"{len(nights)} nights analysed, {len(results) - len(nights)} skipped, "
-          f"{n_raw} raw seeds at {AMP_THRESHOLD_K:.0f} K  [{time.time() - t0:.1f} s]")
+          f"{len(files)} CORAL nights x {len(modes)} modes")
+    nights_by_mode = {}
+    for m in modes:
+        DETECT_MODE = m
+        with Pool(min(16, cpu_count())) as pool:
+            results = pool.map(_night_worker, files, chunksize=8)
+        nights_by_mode[m] = [r for r in results if "error" not in r]
+        print(f"  {labels[m]}: {len(nights_by_mode[m])} nights, "
+              f"{sum(len(n['events']) for n in nights_by_mode[m])} raw seeds  "
+              f"[{time.time() - t0:.1f} s]")
 
-    rows = []
+    counts = {m: ([], []) for m in modes}
     for thr in SWEEP_THRESHOLDS_K:
-        n_cand = n_vort = 0
-        for night in nights:
-            sel = [dict(e) for e in night["events"] if e["amp_k"] >= thr]
-            merged = merge_duplicate_events(sel)
-            n_cand += len(merged)
-            n_vort += sum(e["fast"] and e["confined"] for e in merged)
-        rows.append((float(thr), n_cand, n_vort))
-        print(f"  >= {thr:4.1f} K: {n_cand:6d} candidates, {n_vort:5d} vortex")
+        for m in modes:
+            n_cand = n_vort = 0
+            for night in nights_by_mode[m]:
+                sel = [dict(e) for e in night["events"]
+                       if e["amp_k"] >= thr + NOISE_AMP_RAISE * e["noise_k"]]
+                merged = merge_duplicate_events(sel)
+                n_cand += len(merged)
+                n_vort += sum(e["fast"] and e["confined"] for e in merged)
+            counts[m][0].append(n_cand)
+            counts[m][1].append(n_vort)
+        print(f"  >= {thr:4.1f} K:  " + "  ".join(
+            f"{labels[m]} {counts[m][0][-1]}/{counts[m][1][-1]}" for m in modes))
 
     tag = "coral_sweep_lidar_events"
     with open(OUTPUT_DIR / f"{tag}.csv", "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["threshold_k", "candidates", "vortex"])
-        w.writerows(rows)
+        w.writerow(["threshold_k"] + [f"{c}_{labels[m]}" for m in modes
+                                      for c in ("candidates", "vortex")])
+        for i, thr in enumerate(SWEEP_THRESHOLDS_K):
+            w.writerow([float(thr)] + [counts[m][j][i] for m in modes for j in (0, 1)])
 
-    # amplitude distribution at the sweep minimum (for panel c): merge + gate once with all seeds
-    amp_all, vort_all = [], []
-    for night in nights:
-        merged = merge_duplicate_events([dict(e) for e in night["events"]])
-        amp_all.extend(e["amp_k"] for e in merged)
-        vort_all.extend(e["fast"] and e["confined"] for e in merged)
-    amp_all = np.array(amp_all)
-    vort_all = np.array(vort_all)
+    dists = {}
+    for m in modes:
+        amps, vorts = [], []
+        for night in nights_by_mode[m]:
+            merged = merge_duplicate_events([dict(e) for e in night["events"]])
+            amps.extend(e["amp_k"] for e in merged)
+            vorts.extend(e["fast"] and e["confined"] for e in merged)
+        dists[m] = (np.array(amps), np.array(vorts, dtype=bool))
 
-    thr_arr, cand, vort = (np.array(c) for c in zip(*rows))
-    fig, (ax_a, ax_b, ax_c) = plt.subplots(1, 3, figsize=(13.0, 3.7), constrained_layout=True)
-
-    # (a) plain linear counts vs threshold
-    ax_a.plot(thr_arr, cand, color="0.55", lw=1.6, marker="o", ms=2.5, label="all candidates")
-    ax_a.plot(thr_arr, vort, color="black", lw=1.6, marker="o", ms=2.5, label="vortex")
-    ax_a.axvline(30.0, ls="--", color="C3", lw=1.2)
-    ax_a.set_ylabel("events / -")
-    ax_a.grid(True, alpha=0.25)
-    ax_a.legend(fontsize=7, loc="center right", framealpha=0.9)
-
-    # (b) log counts: piecewise exponential fits (straight lines here) emphasise the slope break
-    # between the steep single-population tail (>= 28 K) and the flatter mixed regime (<= 25 K).
-    # Within its own range each fit coincides with the data, so every line is EXTENDED into the
-    # other regime, where the divergence makes the break visible.
-    ax_b.plot(thr_arr, cand, color="0.55", lw=1.6, marker="o", ms=2.5)
-    ax_b.plot(thr_arr, vort, color="black", lw=1.6, marker="o", ms=2.5)
-    ax_b.set_yscale("log")
+    thr_arr = SWEEP_THRESHOLDS_K
     sel_hi = thr_arr >= SWEEP_FIT_HIGH_K
     sel_lo = thr_arr <= SWEEP_FIT_LOW_K
-    for counts in (cand, vort):
-        for sel, xext in ((sel_hi, thr_arr >= SWEEP_FIT_HIGH_K - SWEEP_FIT_EXT_K),
-                          (sel_lo, thr_arr <= SWEEP_FIT_LOW_K + SWEEP_FIT_EXT_K)):
-            slope, icpt = np.polyfit(thr_arr[sel], np.log10(counts[sel]), 1)
-            ax_b.plot(thr_arr[xext], 10.0 ** (icpt + slope * thr_arr[xext]),
-                      ls="--", color="0.7", lw=1.1, zorder=1.8)
-    ax_b.axvline(30.0, ls="--", color="C3", lw=1.2)
-    ax_b.set_ylim(0.6 * vort.min(), 2.0 * cand.max())
+    bins_c = np.arange(SWEEP_THRESHOLDS_K.min(), 80.01, 1.0)
+    fig, (ax_a, ax_b, ax_c, ax_d) = plt.subplots(1, 4, figsize=(16.2, 3.6),
+                                                 constrained_layout=True)
+    for m in modes:
+        cand = np.array(counts[m][0], dtype=float)
+        vort = np.array(counts[m][1], dtype=float)
+        col = colors[m]
+        ax_a.plot(thr_arr, cand, color=col, lw=1.0, ls="--", alpha=0.55, marker="o", ms=2)
+        ax_a.plot(thr_arr, vort, color=col, lw=1.6, marker="o", ms=2.5, label=labels[m])
+        ax_b.plot(thr_arr, cand, color=col, lw=1.0, ls="--", alpha=0.55, marker="o", ms=2)
+        ax_b.plot(thr_arr, vort, color=col, lw=1.6, marker="o", ms=2.5)
+        # piecewise exponential fits (straight in log space), extended into the other regime
+        # where the divergence makes the slope break visible
+        for series in (cand, vort):
+            for sel, xext in ((sel_hi, thr_arr >= SWEEP_FIT_HIGH_K - SWEEP_FIT_EXT_K),
+                              (sel_lo, thr_arr <= SWEEP_FIT_LOW_K + SWEEP_FIT_EXT_K)):
+                good = series[sel] > 0
+                if good.sum() < 2:
+                    continue
+                slope, icpt = np.polyfit(thr_arr[sel][good], np.log10(series[sel][good]), 1)
+                ax_b.plot(thr_arr[xext], 10.0 ** (icpt + slope * thr_arr[xext]),
+                          ls=":", color=col, alpha=0.55, lw=1.0, zorder=1.8)
+        amps, vorts = dists[m]
+        ax_c.hist(amps, bins=bins_c, histtype="step", color=col, lw=1.0, ls="--", alpha=0.55)
+        ax_c.hist(amps[vorts], bins=bins_c, histtype="step", color=col, lw=1.6)
+
+    # (d) local e-folding rate of the VORTEX counts: a population change would appear as a step;
+    # flat curves = single quasi-exponential (no statistically detectable elbow)
+    for m in modes:
+        vort = np.array(counts[m][1], dtype=float)
+        slope = -np.gradient(np.log(np.maximum(vort, 1.0)), thr_arr)
+        ax_d.plot(thr_arr, uniform_filter1d(slope, 3, mode="nearest"), color=colors[m], lw=1.6)
+    ax_d.set_ylim(0, 0.4)
+    ax_d.set_ylabel(r"$-\,\mathrm{d}\ln N_\mathrm{vortex}/\mathrm{d}\Delta T_{pt}$ / K$^{-1}$")
+
+    ax_a.plot([], [], color="0.5", ls="--", label="candidates")
+    ax_a.set_ylabel("events / -")
+    ax_a.legend(fontsize=7, loc="center right", framealpha=0.9)
+    ax_b.set_yscale("log")
+    ax_b.set_ylim(0.8, 2.0 * max(max(c[0]) for c in counts.values()))
     ax_b.set_ylabel("events / -")
-    ax_b.grid(True, which="both", alpha=0.25)
-
-    # (c) the differential amplitude DISTRIBUTION (2-K bins, log y for the extreme tail) of all
-    # events detected at the sweep minimum
-    bins_c = np.arange(SWEEP_THRESHOLDS_K.min(), np.ceil(amp_all.max()) + 2.01, 2.0)
-    ax_c.hist(amp_all, bins=bins_c, color="0.7", log=True)
-    ax_c.hist(amp_all[vort_all], bins=bins_c, color="black", log=True)
-    ax_c.axvline(30.0, ls="--", color="C3", lw=1.2)
     ax_c.set_ylabel("events / -")
-    ax_c.grid(True, which="both", alpha=0.25)
-
-    for letter, ax in zip("abc", (ax_a, ax_b, ax_c)):
-        ax.set_xlabel(r"$\Delta T_{pp}$" + (" / K" if letter == "c" else " threshold / K"))
+    ax_c.set_xlim(bins_c[0], 80.0)
+    for letter, ax in zip("abcd", (ax_a, ax_b, ax_c, ax_d)):
+        for m in modes:
+            ax.axvline(MODE_DEFAULT_AMP_K[m], ls=":" if m == "bwf" else "--",
+                       color=colors[m], lw=1.2, alpha=0.9)
+        ax.grid(True, which="both" if ax is ax_b else "major", alpha=0.25)
+        ax.set_xlabel(r"$\Delta T_{pt}$" + (" / K" if letter == "c" else " threshold / K"))
+        ax.grid(True, alpha=0.25)
         _add_panel_label(ax, letter)
 
     fig.savefig(OUTPUT_DIR / f"{tag}.png", dpi=DPI, facecolor="w", bbox_inches="tight")
@@ -861,7 +944,8 @@ def main():
                        "time_formatter": None}
             rate_txt = (f"{n_vort}/{n_ev} vortex, "
                         f"{n_vort / (tprime.shape[0] * hours):.2f} / column h")
-            draw_event_figure(events, curtain, rate_txt, OUTPUT_DIR / f"{tag}.png")
+            draw_event_figure(events, curtain, rate_txt, OUTPUT_DIR / f"{tag}.png",
+                      stats_ymax=STATS_YMAX_ARCHIVE)
         write_csv(events_per_col, col_xy, OUTPUT_DIR / f"{tag}.csv")
         print(f"  wrote {tag}.png / .csv  [{time.time() - t0:.1f} s total]")
 
