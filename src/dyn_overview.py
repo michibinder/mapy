@@ -38,6 +38,7 @@ for the darwin_240718_era5 family).
 import glob
 import os
 import sys
+from pathlib import Path
 from multiprocessing import Pool
 
 import numpy as np
@@ -56,7 +57,7 @@ import yaml
 import cmaps
 import plt_helper
 
-plt.style.use("/work/bd0620/b309199/mapy/src/latex_default.mplstyle")
+plt.style.use(Path(__file__).with_name("latex_default.mplstyle"))
 
 T0_UTC = "2024-07-18T20:00"
 Z_TOP_MAP = 60000.0
@@ -88,8 +89,9 @@ TPRIME_LOW_FACTOR = 4.0
 NPROC = int(os.environ.get("DYN_NPROC", "32"))
 FPS = 12
 
-RUNDIR = "/scratch/b/b309199"
-OUTBASE = "/work/bd0620/b309199/mapy/data/pmap-animations"
+ON_JUPITER = Path("/e/project1/gwturb").is_dir()
+RUNDIR = "/e/scratch/gwturb/binder5" if ON_JUPITER else "/scratch/b/b309199"
+OUTBASE = ("/e/project1/gwturb/binder5" if ON_JUPITER else "/work/bd0620/b309199") + "/mapy/data/pmap-animations"
 
 G, RD, CP, P0 = 9.80616, 287.05, 1004.0, 1.0e5
 

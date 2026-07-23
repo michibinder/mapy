@@ -23,15 +23,30 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.merge import merge as rio_merge
 
-CONFIG = {
-    "north": -33.0,
-    "south": -71.0,
-    "west": -115.0,
-    "east": -20.5,
-    "out_res_arcsec": 9.0,
-    "tile_dir": "/work/bd0620/b309199/mapy/data/dems/cop90m_tiles",
-    "out_tif": "/work/bd0620/b309199/mapy/data/dems/cop90m_sam_33-71S_115-20W_9s.tif",
-}
+import os as _os
+
+if _os.path.isdir("/e/project1/gwturb"):  # JUPITER (JSC)
+    # Nest-region box only (darwin 800 m LB + margin), native 3 arcsec for
+    # block-max quality at 800 m. ~260 tiles, ~1 GB — run on a login node.
+    CONFIG = {
+        "north": -45.0,
+        "south": -58.0,
+        "west": -80.0,
+        "east": -60.0,
+        "out_res_arcsec": 3.0,
+        "tile_dir": "/e/project1/gwturb/binder5/mapy/data/dems/cop90m_tiles",
+        "out_tif": "/e/project1/gwturb/binder5/mapy/data/dems/cop90m_nest800_3s.tif",
+    }
+else:  # Levante (DKRZ)
+    CONFIG = {
+        "north": -33.0,
+        "south": -71.0,
+        "west": -115.0,
+        "east": -20.5,
+        "out_res_arcsec": 9.0,
+        "tile_dir": "/work/bd0620/b309199/mapy/data/dems/cop90m_tiles",
+        "out_tif": "/work/bd0620/b309199/mapy/data/dems/cop90m_sam_33-71S_115-20W_9s.tif",
+    }
 
 BASE_URL = "https://copernicus-dem-90m.s3.eu-central-1.amazonaws.com"
 

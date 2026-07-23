@@ -69,8 +69,9 @@ from scipy.ndimage import gaussian_filter, label as nd_label
 tp.quiet()
 
 
-DATA_ROOT = Path("/scratch/b/b309199")
-ANIMATION_ROOT = Path("/work/bd0620/b309199/mapy/data/pmap-animations")
+ON_JUPITER = Path("/e/project1/gwturb").is_dir()
+DATA_ROOT = Path("/e/scratch/gwturb/binder5") if ON_JUPITER else Path("/scratch/b/b309199")
+ANIMATION_ROOT = (Path("/e/project1/gwturb/binder5") if ON_JUPITER else Path("/work/bd0620/b309199")) / "mapy/data/pmap-animations"
 
 TIME_NAME = "time"
 Z_NAME = "z"

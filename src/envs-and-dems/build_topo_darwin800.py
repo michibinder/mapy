@@ -23,8 +23,17 @@ from build_topo_nest import block_max_from_mosaic
 CORAL_PROJ_XY_M = (214000.0, -315000.0)
 CENTER_SAM_XY_M = (-114000.0, -32000.0)
 
+import os as _os
+
+if _os.path.isdir("/e/project1/gwturb"):  # JUPITER (JSC)
+    _DATA = "/e/project1/gwturb/binder5/mapy/data"
+    _MOSAIC = f"{_DATA}/dems/cop90m_nest800_3s.tif"  # built by download_copdem.py
+else:  # Levante (DKRZ)
+    _DATA = "/work/bd0620/b309199/mapy/data"
+    _MOSAIC = f"{_DATA}/dems/cop90m_ssa.tif"
+
 CONFIG = {
-    "mosaic": "/work/bd0620/b309199/mapy/data/dems/cop90m_ssa.tif",
+    "mosaic": _MOSAIC,
     "proj4": "+proj=lcc +lat_0=-51 +lon_0=-71 +lat_1=-49 +lat_2=-53 +x_0=0 +y_0=0 "
              "+ellps=aust_SA +units=m +no_defs +type=crs",
     "center_xy_m": (
@@ -36,7 +45,7 @@ CONFIG = {
     "ny": 764,
     "smooth_cutoff_dx": 2.0,
     "chunk_rows": 1000,
-    "out": "/work/bd0620/b309199/mapy/data/pmap-topos/darwin_0800m_1020x764_fullorog.nc",
+    "out": f"{_DATA}/pmap-topos/darwin_0800m_1020x764_fullorog.nc",
 }
 
 

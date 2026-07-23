@@ -34,7 +34,8 @@ import cmaps, plt_helper, filter
 # python3 slc_and_lid.py vortex darwin_240718_400m <notest>
 
 """Config"""
-data_folder = "/scratch/b/b309199"
+ON_JUPITER = os.path.isdir("/e/project1/gwturb")
+data_folder = "/e/scratch/gwturb/binder5" if ON_JUPITER else "/scratch/b/b309199"
 # data_folder = "/work/bd0620/b309199/patagonia"
 # data_folder = "/work/bd0620/b309199/scratch"
 pbar_interval = 5 # %
@@ -144,7 +145,7 @@ CLEV_LARGE = {"w": (-16, 16), "t": (-16, 16), "u": (-40, 40)}
 REGIONS = {
     "pata": {"zoom": (-400, -100, 100, 400), "clev": CLEV_LARGE, "wind_lims": (-103, 153)},
     "darwin": {"zoom": (-50, 150, -100, 100), "marker": (-8.8, -61.6), "clev": CLEV_LARGE, "wind_lims": (-103, 153),
-               "yslice": 1, "zslice": 4, "xlid": 114.4},
+               "yslice": 1, "zslice": 4, "xlid": 0.0},  # CORAL: x=0 in the sam frame (was 114.4, old proj frame)
 }
 
 # preset (= VAR argument).  limits: "auto" (full domain) | "zoom" (region window) | (x0,x1,y0,y1)
